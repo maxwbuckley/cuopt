@@ -34,6 +34,7 @@ jobs:
       - wheel-build-cuopt-sh-client
       - test-self-hosted-server
       - pr-test-summary
+      - devcontainer
     permissions:
       contents: read
     uses: rapidsai/shared-workflows/.github/workflows/pr-builder.yaml@main
@@ -95,6 +96,7 @@ jobs:
           - '!.github/workflows/test.yaml'
           - '!.github/workflows/test_images.yaml'
           - '!.github/workflows/trigger-breaking-change-alert.yaml'
+          - '!.devcontainer/**'
           - '!.gitignore'
           - '!.pre-commit-config.yaml'
           - '!AGENTS.md'
@@ -153,6 +155,7 @@ jobs:
           - '!.github/workflows/test.yaml'
           - '!.github/workflows/test_images.yaml'
           - '!.github/workflows/trigger-breaking-change-alert.yaml'
+          - '!.devcontainer/**'
           - '!.gitignore'
           - '!.pre-commit-config.yaml'
           - '!AGENTS.md'
@@ -222,6 +225,7 @@ jobs:
           - '!.github/workflows/test.yaml'
           - '!.github/workflows/test_images.yaml'
           - '!.github/workflows/trigger-breaking-change-alert.yaml'
+          - '!.devcontainer/**'
           - '!.gitignore'
           - '!.pre-commit-config.yaml'
           - '!AGENTS.md'
@@ -288,6 +292,7 @@ jobs:
           - '!.github/workflows/test.yaml'
           - '!.github/workflows/test_images.yaml'
           - '!.github/workflows/trigger-breaking-change-alert.yaml'
+          - '!.devcontainer/**'
           - '!.gitignore'
           - '!.pre-commit-config.yaml'
           - '!AGENTS.md'
@@ -589,3 +594,18 @@ jobs:
       - run: python3 ci/utils/pr_test_summary.py
         env:
           GH_TOKEN: ${{ github.token }}
+  devcontainer:
+    secrets: inherit
+    uses: rapidsai/shared-workflows/.github/workflows/build-in-devcontainer.yaml@main
+    with:
+      arch: '["amd64", "arm64"]'
+      cuda: '["12.9", "13.1"]'
+      node_type: "cpu8"
+      env: |
+        SCCACHE_DIST_MAX_RETRIES=inf
+        SCCACHE_SERVER_LOG=sccache=debug
+        SCCACHE_DIST_FALLBACK_TO_LOCAL_COMPILE=false
+      build_command: |
+        sccache --zero-stats;
+        build-all -j0 -DBUILD_MIP_BENCHMARKS=ON -DBUILD_LP_BENCHMARKS=ON --verbose 2>&1 | tee telemetry-artifacts/build.log;
+        sccache --show-adv-stats | tee telemetry-artifacts/sccache-stats.txt;
