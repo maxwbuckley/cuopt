@@ -1,7 +1,8 @@
-# cmake-format: off
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# cmake-format: off
 # cmake-format: on
 
 # Add CLI end-to-end test
 ConfigureTest(CLI_TEST test_cli.cpp LABELS numopt)
+set_tests_properties(CLI_TEST PROPERTIES ENVIRONMENT "PATH=$<TARGET_FILE_DIR:cuopt_cli>:$ENV{PATH}")
