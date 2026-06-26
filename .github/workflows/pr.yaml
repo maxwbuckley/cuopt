@@ -595,7 +595,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
   devcontainer:
-    secrets: inherit
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    secrets: inherit # zizmor: ignore[secrets-inherit]
     uses: rapidsai/shared-workflows/.github/workflows/build-in-devcontainer.yaml@main
     with:
       arch: '["amd64", "arm64"]'
