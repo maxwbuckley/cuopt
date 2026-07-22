@@ -1125,6 +1125,87 @@ TEST_F(DefaultServerTests, CancelRunningJob)
   client->delete_job(job_id);
 }
 
+// -- Delete should cancel queued / running jobs --
+
+TEST_F(DefaultServerTests, DeleteQueuedJobPreventsRun)
+{
+  auto client = create_client();
+  ASSERT_NE(client, nullptr);
+
+  std::string mps_path = get_test_mip_path("neos5-free-bound.mps");
+  auto problem         = load_problem_from_file(mps_path);
+
+  mip_solver_settings_t<int32_t, double> settings;
+  settings.time_limit = 120.0;
+
+  // Occupy the single worker with a long solve.
+  auto running = client->submit_mip(problem, settings);
+  ASSERT_TRUE(running.success);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  auto queued = client->submit_mip(problem, settings);
+  ASSERT_TRUE(queued.success);
+
+  auto queued_status = client->check_status(queued.job_id);
+  ASSERT_TRUE(queued_status.success);
+  EXPECT_EQ(queued_status.status, job_status_t::QUEUED)
+    << "Second job should still be queued behind the running solve";
+
+  EXPECT_TRUE(client->delete_job(queued.job_id));
+
+  auto after_delete = client->check_status(queued.job_id);
+  EXPECT_EQ(after_delete.status, job_status_t::NOT_FOUND);
+
+  // Running job should still be able to finish (or be cancelled/failed).
+  wait_for_job_done(client.get(), running.job_id, 130);
+  client->delete_job(running.job_id);
+}
+
+TEST_F(DefaultServerTests, DeleteRunningJobCancelsWorker)
+{
+  auto client = create_client();
+  ASSERT_NE(client, nullptr);
+
+  std::string mps_path = get_test_mip_path("neos5-free-bound.mps");
+  auto problem         = load_problem_from_file(mps_path);
+
+  mip_solver_settings_t<int32_t, double> settings;
+  settings.time_limit = 120.0;
+
+  auto submit_result = client->submit_mip(problem, settings);
+  ASSERT_TRUE(submit_result.success);
+  std::string job_id = submit_result.job_id;
+
+  // Wait until the worker has claimed the job.
+  bool processing = false;
+  for (int i = 0; i < 40; ++i) {
+    auto status = client->check_status(job_id);
+    if (status.status == job_status_t::PROCESSING) {
+      processing = true;
+      break;
+    }
+    if (status.status == job_status_t::COMPLETED || status.status == job_status_t::FAILED ||
+        status.status == job_status_t::CANCELLED) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  ASSERT_TRUE(processing) << "Job never reached PROCESSING before delete";
+
+  auto start = std::chrono::steady_clock::now();
+  EXPECT_TRUE(client->delete_job(job_id));
+
+  auto after_delete = client->check_status(job_id);
+  EXPECT_EQ(after_delete.status, job_status_t::NOT_FOUND);
+
+  // Give the replacement worker a moment to come up before the next test.
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  auto elapsed =
+    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start);
+  EXPECT_LT(elapsed.count(), 15) << "Delete of a running job should return promptly";
+}
+
 // =============================================================================
 // Chunked Upload Tests (--max-message-mb 256)
 // =============================================================================
