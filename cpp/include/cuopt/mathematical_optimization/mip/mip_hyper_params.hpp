@@ -80,6 +80,14 @@ struct mip_hyper_params_t {
   // Root heuristics: -1 (automatic) / 0 (disable) / 1 (enable)
   i_t bnb_root_heuristics = -1;
 
+  // Root node time budgets, as a fraction of the time remaining when the phase starts. With a
+  // finite time limit, no new root cut pass starts once the cut loop has used this share, and
+  // root strong branching stops once it has used its share; candidates it did not evaluate are
+  // left to reliability branching in the tree. 1 disables the budget. Not applied in
+  // deterministic mode, since the budgets are measured in wall-clock time.
+  f_t bnb_root_cut_time_ratio              = 0.2;
+  f_t bnb_root_strong_branching_time_ratio = 0.2;
+
   // Limit of the total number of simplex iterations in B&B
   std::int64_t bnb_simplex_iteration_limit = std::numeric_limits<std::int64_t>::max();
 

@@ -166,6 +166,9 @@
 #define CUOPT_MIP_HYPER_BNB_NODES_PER_STEAL      "mip_hyper_bnb_nodes_per_steal"
 #define CUOPT_MIP_HYPER_BNB_MAX_STEAL_ATTEMPTS   "mip_hyper_bnb_max_steal_attempts"
 #define CUOPT_MIP_HYPER_BNB_ROOT_HEURISTICS      "mip_hyper_bnb_root_heuristics"
+#define CUOPT_MIP_HYPER_BNB_ROOT_CUT_TIME_RATIO  "mip_hyper_bnb_root_cut_time_ratio"
+#define CUOPT_MIP_HYPER_BNB_ROOT_STRONG_BRANCHING_TIME_RATIO \
+  "mip_hyper_bnb_root_strong_branching_time_ratio"
 
 /* @brief Block bounded-variable-elimination step of cuOpt's internal MIP presolve */
 #define CUOPT_MIP_HYPER_BLOCK_BVE "mip_hyper_block_bve"

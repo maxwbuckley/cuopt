@@ -169,6 +169,8 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_HYPER_BNB_DIVING_WORKERS_RATIO, &mip_settings.mip_hyper_params.bnb_diving_workers_ratio, f_t(0.0), f_t(1.0), f_t(0.5), "diving workers as a fraction of the B&B threads (at least 1)"},
     {CUOPT_MIP_HYPER_BNB_SUBMIP_WORKERS_RATIO, &mip_settings.mip_hyper_params.bnb_submip_workers_ratio, f_t(0.0), f_t(1.0), f_t(0.125), "sub-MIP workers as a fraction of the B&B threads (at least 1)"},
     {CUOPT_MIP_HYPER_BNB_STEAL_CHANCE, &mip_settings.mip_hyper_params.bnb_steal_chance, f_t(0.0), f_t(1.0), f_t(0.05), "probability that a best-first worker steals nodes from another worker"},
+    {CUOPT_MIP_HYPER_BNB_ROOT_CUT_TIME_RATIO, &mip_settings.mip_hyper_params.bnb_root_cut_time_ratio, f_t(0.0), f_t(1.0), f_t(0.2), "share of the remaining time the root cut loop may use before it stops starting new passes (1 disables)"},
+    {CUOPT_MIP_HYPER_BNB_ROOT_STRONG_BRANCHING_TIME_RATIO, &mip_settings.mip_hyper_params.bnb_root_strong_branching_time_ratio, f_t(0.0), f_t(1.0), f_t(0.2), "share of the remaining time root strong branching may use (1 disables)"},
    };
 
   // Int parameters

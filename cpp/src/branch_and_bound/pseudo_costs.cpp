@@ -1040,6 +1040,15 @@ void strong_branching_reduced(const lp_problem_t<i_t, f_t>& original_lp,
   const f_t elapsed_time = toc(start_time);
   if (elapsed_time > settings.time_limit) { return; }
 
+  // Bound root strong branching to a share of the remaining time. Candidates that are not
+  // evaluated keep NaN scores and are handled later by reliability branching in the tree.
+  const f_t sb_time_ratio = settings.mip_hyper_params.bnb_root_strong_branching_time_ratio;
+  simplex_solver_settings_t<i_t, f_t> sb_settings = settings;
+  if (!settings.deterministic && sb_time_ratio < 1.0 && std::isfinite(settings.time_limit)) {
+    sb_settings.time_limit =
+      elapsed_time + std::max<f_t>(sb_time_ratio, 0.0) * (settings.time_limit - elapsed_time);
+  }
+
   // 0: no batch PDLP, 1: cooperative batch PDLP and DS, 2: batch PDLP only
   i_t effective_batch_pdlp = settings.mip_batch_pdlp_strong_branching;
 
@@ -1097,7 +1106,7 @@ void strong_branching_reduced(const lp_problem_t<i_t, f_t>& original_lp,
   } else {
     if (effective_batch_pdlp != 0) {
 #pragma omp task default(shared) priority(CUOPT_HIGH_TASK_PRIORITY)
-      batch_pdlp_strong_branching_task(settings,
+      batch_pdlp_strong_branching_task(sb_settings,
                                        effective_batch_pdlp,
                                        start_time,
                                        concurrent_halt,
@@ -1134,7 +1143,7 @@ void strong_branching_reduced(const lp_problem_t<i_t, f_t>& original_lp,
                              end,
                              start_time,
                              original_lp,
-                             settings,
+                             sb_settings,
                              var_types,
                              fractional,
                              root_solution.x,
@@ -1162,6 +1171,13 @@ void strong_branching_reduced(const lp_problem_t<i_t, f_t>& original_lp,
   }
 
   settings.log.printf("Strong branching completed in %.2fs\n", toc(strong_branching_start_time));
+  if (sb_settings.time_limit < settings.time_limit && toc(start_time) > sb_settings.time_limit) {
+    settings.log.printf(
+      "Strong branching time budget reached: %d of %ld candidates evaluated. Set "
+      "mip_hyper_bnb_root_strong_branching_time_ratio to change it\n",
+      static_cast<i_t>(num_strong_branches_completed),
+      fractional.size());
+  }
 
   constexpr bool verbose = false;
   if (verbose) {

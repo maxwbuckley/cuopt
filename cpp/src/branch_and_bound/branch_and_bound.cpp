@@ -4486,6 +4486,16 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   i_t cut_pool_size             = 0;
   lp_settings.inside_mip        = 1;
 
+  // Bound the root cut loop to a share of the remaining time, so that strong branching and the
+  // tree search still get most of the budget when cut passes are expensive and make little
+  // progress. A pass that has started is always finished.
+  f_t cut_time_budget      = std::numeric_limits<f_t>::infinity();
+  const f_t cut_time_ratio = settings_.mip_hyper_params.bnb_root_cut_time_ratio;
+  if (!settings_.deterministic && cut_time_ratio < 1.0 && std::isfinite(settings_.time_limit)) {
+    cut_time_budget = std::max<f_t>(cut_time_ratio, 0.0) *
+                      std::max<f_t>(settings_.time_limit - toc(exploration_stats_.start_time), 0.0);
+  }
+
   for (i_t cut_pass = 0; cut_pass < settings_.max_cut_passes; cut_pass++) {
     if (toc(exploration_stats_.start_time) >= settings_.time_limit) {
       solver_status_ = mip_status_t::TIME_LIMIT;
@@ -4530,6 +4540,15 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
         settings_.benchmark_info_ptr->cut_generation_time_sec = toc(cut_generation_start_time);
       }
       return mip_status_t::OPTIMAL;
+    }
+
+    if (cut_pass > 0 && toc(cut_generation_start_time) >= cut_time_budget) {
+      settings_.log.printf(
+        "Root cut passes stopped after %d passes: time budget of %.2fs used. Set "
+        "mip_hyper_bnb_root_cut_time_ratio to change it\n",
+        cut_pass,
+        cut_time_budget);
+      break;
     }
 
     launch_root_heuristics(original_lp_,
