@@ -161,6 +161,18 @@ class branch_and_bound_t {
   f_t get_upper_bound() const { return upper_bound_.load(std::memory_order::relaxed); }
   bool has_solver_space_incumbent() const { return incumbent_.has_incumbent; }
 
+  // Re-solve the continuous variables of a feasible solution of `original_lp_` with its integer
+  // variables fixed. On success, replaces `solution` and `obj` with the LP solution and returns
+  // true. `stop_on_halt` makes the LP stop when the search is halted.
+  bool polish_continuous_variables(std::vector<f_t>& solution,
+                                   f_t& obj,
+                                   f_t time_limit,
+                                   bool stop_on_halt);
+
+  // Polish a solution of the user problem whose rows or bounds are violated within the
+  // feasibility tolerance. Returns true when `solution` was replaced. Usable after solve().
+  bool polish_solution(std::vector<f_t>& solution);
+
   // Repair a low-quality solution from the heuristics.
   bool repair_solution(const std::vector<f_t>& leaf_edge_norms,
                        const std::vector<f_t>& potential_solution,

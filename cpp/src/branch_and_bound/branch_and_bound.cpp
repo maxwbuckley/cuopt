@@ -30,6 +30,7 @@
 #include <dual_simplex/presolve.hpp>
 #include <dual_simplex/primal.hpp>
 #include <dual_simplex/random.hpp>
+#include <dual_simplex/solve.hpp>
 #include <dual_simplex/user_problem.hpp>
 #include <linear_algebra/vector_math.hpp>
 #include <math_optimization/tic_toc.hpp>
@@ -74,6 +75,7 @@ using simplex::lp_solution_t;
 using simplex::lp_status_t;
 using simplex::mip_solution_t;
 using simplex::simplex_solver_settings_t;
+using simplex::solve_linear_program_advanced;
 using simplex::solve_linear_program_with_advanced_basis;
 using simplex::uncrush_primal_solution;
 using simplex::user_problem_t;
@@ -81,6 +83,12 @@ using simplex::variable_status_t;
 using simplex::variable_type_t;
 
 namespace {
+
+// Primal feasibility tolerance of the fixed-integer LP that polishes a heuristic solution. The LP
+// is small and well posed, so it is solved well below the MIP feasibility tolerance.
+constexpr double polish_primal_tol = 1e-9;
+// Time allowed for polishing the returned solution once the search has stopped.
+constexpr double final_polish_time_limit = 1.0;
 
 template <typename i_t, typename f_t>
 void full_variable_types(const user_problem_t<i_t, f_t>& original_problem,
@@ -577,8 +585,38 @@ bool branch_and_bound_t<i_t, f_t>::set_solution_from_heuristics(const std::vecto
                               integral_err);
     mutex_original_lp_.unlock();
 
+    // A heuristic may leave rows violated by up to the feasibility tolerance in the direction that
+    // improves the objective. Used as the upper bound, such an objective can prune the optimal
+    // solution, so the continuous variables are re-solved first.
+    const f_t unpolished_obj = obj;
+    bool polished            = false;
+    if (is_feasible && settings_.inside_submip == 0 &&
+        std::max(primal_err, bound_err) > CUOPT_MIP_POLISH_VIOLATION_THRESHOLD) {
+      polished =
+        polish_continuous_variables(crushed_solution,
+                                    obj,
+                                    settings_.time_limit - toc(exploration_stats_.start_time),
+                                    /*stop_on_halt=*/true);
+      if (polished) {
+        settings_.log.debug_format(
+          "{} solution polished: objective {:.10e} -> {:.10e}, violation {:.2e}",
+          feasible_solution_symbol(origin),
+          compute_user_objective(original_lp_, unpolished_obj),
+          compute_user_objective(original_lp_, obj),
+          std::max(primal_err, bound_err));
+      }
+    }
+
     if (is_feasible) {
       std::lock_guard lock(mutex_upper_);
+      // An upper bound without an incumbent comes from the early heuristics. When it equals the
+      // objective of this solution before polishing, it was derived from this solution.
+      if (polished && !incumbent_.has_incumbent &&
+          std::abs(upper_bound_.load(std::memory_order::relaxed) - unpolished_obj) <=
+            settings_.primal_tol &&
+          obj > upper_bound_.load(std::memory_order::relaxed)) {
+        upper_bound_ = obj;
+      }
       if (accept_new_incumbent(obj)) {
         f_t current_upper_bound = upper_bound_.load(std::memory_order::relaxed);
         upper_bound_            = std::min(current_upper_bound, obj);
@@ -730,6 +768,106 @@ void branch_and_bound_t<i_t, f_t>::set_solution_from_submip(
     submip_stats.save_success(fixrate);
     if (settings_.solution_callback != nullptr) { settings_.solution_callback(user_sol, obj); }
   }
+}
+
+template <typename i_t, typename f_t>
+bool branch_and_bound_t<i_t, f_t>::polish_solution(std::vector<f_t>& solution)
+{
+  if (solution.size() != static_cast<size_t>(original_problem_.num_cols)) { return false; }
+  std::vector<f_t> crushed_solution;
+  f_t primal_err;
+  f_t bound_err;
+  f_t integral_err;
+  i_t num_fractional;
+  mutex_original_lp_.lock();
+  crush_primal_solution<i_t, f_t>(
+    original_problem_, original_lp_, solution, new_slacks_, crushed_solution);
+  const bool feasible = check_guess(original_lp_,
+                                    settings_,
+                                    var_types_,
+                                    crushed_solution,
+                                    primal_err,
+                                    bound_err,
+                                    num_fractional,
+                                    integral_err);
+  mutex_original_lp_.unlock();
+  if (!feasible || std::max(primal_err, bound_err) <= CUOPT_MIP_POLISH_VIOLATION_THRESHOLD) {
+    return false;
+  }
+
+  f_t obj = compute_objective(original_lp_, crushed_solution);
+  if (!polish_continuous_variables(
+        crushed_solution, obj, final_polish_time_limit, /*stop_on_halt=*/false)) {
+    return false;
+  }
+  mutex_original_lp_.lock();
+  uncrush_primal_solution(original_problem_, original_lp_, crushed_solution, solution);
+  mutex_original_lp_.unlock();
+  return true;
+}
+
+template <typename i_t, typename f_t>
+bool branch_and_bound_t<i_t, f_t>::polish_continuous_variables(std::vector<f_t>& solution,
+                                                               f_t& obj,
+                                                               f_t time_limit,
+                                                               bool stop_on_halt)
+{
+  if (time_limit <= 0.0) { return false; }
+  mutex_original_lp_.lock();
+  if (solution.size() != static_cast<size_t>(original_lp_.num_cols)) {
+    mutex_original_lp_.unlock();
+    return false;
+  }
+  lp_problem_t<i_t, f_t> polish_lp = original_lp_;
+  mutex_original_lp_.unlock();
+
+  bool has_continuous = false;
+  for (i_t j = 0; j < original_problem_.num_cols; ++j) {
+    if (var_types_[j] != variable_type_t::INTEGER) {
+      has_continuous = true;
+      break;
+    }
+  }
+  if (!has_continuous) { return false; }
+
+  for (i_t j = 0; j < polish_lp.num_cols; ++j) {
+    if (var_types_[j] == variable_type_t::INTEGER) {
+      const f_t fixed_val = std::round(solution[j]);
+      polish_lp.lower[j]  = fixed_val;
+      polish_lp.upper[j]  = fixed_val;
+    }
+  }
+
+  simplex_solver_settings_t<i_t, f_t> lp_settings = settings_;
+  lp_settings.time_limit                          = time_limit;
+  lp_settings.set_log(false);
+  lp_settings.concurrent_halt = stop_on_halt ? &node_concurrent_halt_ : nullptr;
+  lp_settings.primal_tol      = std::min(settings_.primal_tol, polish_primal_tol);
+
+  lp_solution_t<i_t, f_t> lp_solution(polish_lp.num_rows, polish_lp.num_cols);
+  std::vector<variable_status_t> vstatus;
+  std::vector<f_t> edge_norms;
+  const lp_status_t status =
+    solve_linear_program_advanced(polish_lp, tic(), lp_settings, lp_solution, vstatus, edge_norms);
+  if (status != lp_status_t::OPTIMAL) { return false; }
+
+  f_t primal_err;
+  f_t bound_err;
+  f_t integral_err;
+  i_t num_fractional;
+  const bool feasible = check_guess(polish_lp,
+                                    settings_,
+                                    var_types_,
+                                    lp_solution.x,
+                                    primal_err,
+                                    bound_err,
+                                    num_fractional,
+                                    integral_err);
+  if (!feasible) { return false; }
+
+  solution = std::move(lp_solution.x);
+  obj      = compute_objective(polish_lp, solution);
+  return true;
 }
 
 template <typename i_t, typename f_t>

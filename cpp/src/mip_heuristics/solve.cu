@@ -935,7 +935,12 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
         mip::solution_t<i_t, f_t> fallback_sol(full_problem);
         fallback_sol.copy_new_assignment(early_best_user_assignment);
         fallback_sol.compute_feasibility();
-        if (fallback_sol.get_feasible()) {
+        // The solver received this incumbent and re-solved its continuous variables if its rows
+        // were violated within the tolerance, so the objective it returned is the attainable one.
+        const bool has_continuous = op_problem.get_n_integers() < op_problem.get_n_variables();
+        if (fallback_sol.get_feasible() &&
+            (!has_continuous || fallback_sol.compute_max_constraint_violation() <=
+                                  CUOPT_MIP_POLISH_VIOLATION_THRESHOLD)) {
           auto stats                          = sol.get_stats();
           stats.presolve_time                 = cuopt_presolve_time + presolve_time;
           fallback_sol.post_process_completed = true;
