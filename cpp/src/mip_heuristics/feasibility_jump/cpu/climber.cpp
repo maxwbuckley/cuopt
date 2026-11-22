@@ -522,6 +522,53 @@ std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> init_fj_cpu_from_host_model(
 }
 
 template <typename i_t, typename f_t>
+int64_t cpufj_lane_private_bytes(const fj_cpu_problem_t<i_t, f_t>& problem, bool lane_owns_problem)
+{
+  const int64_t n_variables = problem.n_variables;
+  const int64_t n_rows      = problem.n_constraints;
+  const int64_t nnz         = problem.offsets[n_rows];
+  int64_t search_rows       = 0;
+  int64_t search_nnz        = 0;
+  for (i_t row = 0; row < problem.n_constraints; ++row) {
+    const int64_t sides = (int64_t)std::isfinite((f_t)problem.cstr_lb[row]) +
+                          (int64_t)std::isfinite((f_t)problem.cstr_ub[row]);
+    search_rows += sides;
+    search_nnz += sides * (problem.offsets[row + 1] - problem.offsets[row]);
+  }
+  // Estimates from the climber layout (see build_one_sided_rows and fj_cpu_climber_t).
+  // Search nonzero: forward and transposed one-sided matrix (index and coefficient each), plus
+  // the cached move and its version.
+  constexpr int64_t bytes_per_search_nonzero =
+    2 * (sizeof(i_t) + sizeof(f_t)) + sizeof(std::pair<f_t, fj_staged_score_t>) + sizeof(i_t);
+  // Search row: row state, slack compensation, bound, integrality flag, offset, version and the
+  // violated / satisfied set entries.
+  constexpr int64_t bytes_per_search_row = 4 * sizeof(f_t) + 1 + 6 * sizeof(i_t);
+  // Model row: initial weights, activity and its compensation.
+  constexpr int64_t bytes_per_model_row = 4 * sizeof(f_t);
+  // Variable: bounds, tabu, assignments, colouring and move stamps.
+  constexpr int64_t bytes_per_variable = 16 * sizeof(f_t);
+  int64_t bytes = search_nnz * bytes_per_search_nonzero + search_rows * bytes_per_search_row +
+                  n_rows * bytes_per_model_row + n_variables * bytes_per_variable;
+  if (lane_owns_problem) {
+    // Row-wise and column-wise copies of the model, row bounds and variable data.
+    bytes += 2 * nnz * (sizeof(i_t) + sizeof(f_t)) + 2 * n_rows * sizeof(f_t) +
+             n_variables * (2 * sizeof(f_t) + 2 * sizeof(i_t));
+  }
+  return bytes;
+}
+
+template <typename i_t, typename f_t>
+int cpufj_lane_count_within_memory_budget(const fj_cpu_problem_t<i_t, f_t>& problem,
+                                          int requested_lanes,
+                                          bool lane_owns_problem)
+{
+  const int64_t lane_bytes =
+    std::max<int64_t>(1, cpufj_lane_private_bytes(problem, lane_owns_problem));
+  const int64_t fit = CUOPT_MIP_CPUFJ_LANE_MEMORY_BUDGET_BYTES / lane_bytes;
+  return (int)std::clamp<int64_t>(fit, 1, std::max(1, requested_lanes));
+}
+
+template <typename i_t, typename f_t>
 std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> init_fj_cpu_clone(
   const fj_cpu_climber_t<i_t, f_t>& tmpl,
   std::atomic<bool>& preemption_flag,
@@ -579,6 +626,10 @@ template void finalize_fj_cpu_host_initialization(
   int,
   int,
   const typename mip_solver_settings_t<int, float>::tolerances_t&);
+template int64_t cpufj_lane_private_bytes<int, float>(const fj_cpu_problem_t<int, float>&, bool);
+template int cpufj_lane_count_within_memory_budget<int, float>(const fj_cpu_problem_t<int, float>&,
+                                                               int,
+                                                               bool);
 template std::unique_ptr<fj_cpu_climber_t<int, float>> init_fj_cpu_clone(
   const fj_cpu_climber_t<int, float>&, std::atomic<bool>&, fj_settings_t);
 #endif
@@ -621,6 +672,9 @@ template void finalize_fj_cpu_host_initialization(
   int,
   int,
   const typename mip_solver_settings_t<int, double>::tolerances_t&);
+template int64_t cpufj_lane_private_bytes<int, double>(const fj_cpu_problem_t<int, double>&, bool);
+template int cpufj_lane_count_within_memory_budget<int, double>(
+  const fj_cpu_problem_t<int, double>&, int, bool);
 template std::unique_ptr<fj_cpu_climber_t<int, double>> init_fj_cpu_clone(
   const fj_cpu_climber_t<int, double>&, std::atomic<bool>&, fj_settings_t);
 #endif

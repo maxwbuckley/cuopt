@@ -39,12 +39,23 @@
  * portfolio gains little while Papilo slows down roughly linearly with the lane count. */
 #define CUOPT_MIP_EARLY_CPUFJ_MAX_LANES 16
 
+/* @brief Host memory the private state of a CPUFJ lane set may take in total. Every lane keeps its
+ * own one-sided copy of the constraint matrix, a per-nonzero move cache and per-row and
+ * per-variable state (see cpufj_lane_private_bytes), so on problems with millions of rows or tens
+ * of millions of nonzeros an uncapped lane set takes tens of GB. Lane sets are shrunk to fit; one
+ * lane is always kept. */
+#define CUOPT_MIP_CPUFJ_LANE_MEMORY_BUDGET_BYTES (int64_t{4} << 30)
+
 /* @brief Maximum Papilo arena concurrency, including the calling solver thread. */
 #define CUOPT_MIP_PAPILO_THREAD_LIMIT 4
 
 /* @brief Upper bound on the persistent root CPUFJ lane set. Every lane holds its own host copy of
  * the root LP and occupies an OMP task for the whole of the cut loop. */
 #define CUOPT_MIP_ROOT_CPUFJ_MAX_LANES 4
+
+/* @brief Host memory the root-phase heuristic workers (diving, sub-MIP, CPU FJ) may take in total.
+ * Each holds its own copy of the root LP; the worker count is reduced on very large LPs to fit. */
+#define CUOPT_MIP_ROOT_HEURISTICS_MEMORY_BUDGET_BYTES (int64_t{8} << 30)
 
 /* @brief Priority classes for the omp tasks. Highest value = higher priority.
  * Note that this only gives a hint to the runtime, such that the high priority

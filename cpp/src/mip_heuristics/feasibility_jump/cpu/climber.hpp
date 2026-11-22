@@ -52,6 +52,27 @@ std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> init_fj_cpu_from_host_model(
   std::atomic<bool>& preemption_flag,
   fj_settings_t settings);
 
+/**
+ * @brief Estimated host memory one CPUFJ lane holds on its own. A row with finite lower and upper
+ * bounds is searched as two rows, each with its own copy of the row's nonzeros.
+ * @param problem The problem the lane searches
+ * @param lane_owns_problem True when the lane builds its own copy of the problem rather than
+ * sharing it with the other lanes
+ */
+template <typename i_t, typename f_t>
+int64_t cpufj_lane_private_bytes(const fj_cpu_problem_t<i_t, f_t>& problem, bool lane_owns_problem);
+
+/**
+ * @brief Number of lanes that fit in CUOPT_MIP_CPUFJ_LANE_MEMORY_BUDGET_BYTES, at least one.
+ * @param problem The problem the lanes search
+ * @param requested_lanes Lane count the caller would use without the memory limit
+ * @param lane_owns_problem True when every lane builds its own copy of the problem
+ */
+template <typename i_t, typename f_t>
+int cpufj_lane_count_within_memory_budget(const fj_cpu_problem_t<i_t, f_t>& problem,
+                                          int requested_lanes,
+                                          bool lane_owns_problem = false);
+
 template <typename i_t, typename f_t>
 void finalize_fj_cpu_host_initialization(
   fj_cpu_climber_t<i_t, f_t>&,

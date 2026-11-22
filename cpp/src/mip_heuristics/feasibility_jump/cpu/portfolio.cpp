@@ -53,6 +53,13 @@ void fj_cpu_worker_t<i_t, f_t>::create_worker(
 }
 
 template <typename i_t, typename f_t>
+int64_t fj_cpu_worker_t<i_t, f_t>::private_memory_bytes() const
+{
+  if (!fj_cpu || !fj_cpu->problem) { return 0; }
+  return cpufj_lane_private_bytes(*fj_cpu->problem, /*lane_owns_problem=*/true);
+}
+
+template <typename i_t, typename f_t>
 void fj_cpu_worker_t<i_t, f_t>::run_async(f_t time_limit, double work_unit_limit)
 {
   if (!is_initialized) return;

@@ -76,6 +76,10 @@ struct fj_cpu_worker_t {
   void stop();
 
   void send_stop_signal();
+
+  // Estimated host memory held by this worker's climber, including its own copy of the problem.
+  // Zero before create_worker.
+  int64_t private_memory_bytes() const;
 };
 
 }  // namespace cuopt::mathematical_optimization::mip

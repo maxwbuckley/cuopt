@@ -20,6 +20,7 @@
 #include <utilities/copy_helpers.hpp>
 #include <utilities/timer.hpp>
 
+#include <mip_heuristics/feasibility_jump/cpu/climber.hpp>
 #include <mip_heuristics/feasibility_jump/cpu/search/api.hpp>
 #include <mip_heuristics/feasibility_jump/fj_cpu.cuh>
 
@@ -365,6 +366,8 @@ bool local_search_t<i_t, f_t>::do_fj_solve(solution_t<i_t, f_t>& solution,
                                          randomize_params,
                                          preserve_rng,
                                          copy_related_variables);
+    ls_cpu_fj.resize(
+      cpufj_lane_count_within_memory_budget(*ls_cpu_fj[0]->problem, (int)ls_cpu_fj.size()));
     for (size_t lane = 1; lane < ls_cpu_fj.size(); ++lane) {
       fj_settings_t settings;
       settings.seed = fj.next_seed();

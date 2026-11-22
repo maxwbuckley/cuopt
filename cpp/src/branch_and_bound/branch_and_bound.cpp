@@ -3342,7 +3342,7 @@ void branch_and_bound_t<i_t, f_t>::launch_root_heuristics(
   mutex_upper_.unlock();
 
   bool use_rins = has_incumbent && settings_.mip_hyper_params.submip_rins != 0;
-  if (use_rins || settings_.mip_hyper_params.submip_rens != 0) {
+  if (root_heuristics.allow_submip_ && (use_rins || settings_.mip_hyper_params.submip_rens != 0)) {
     root_heuristics.stop_old_workers(cut_pass, 1);
 
     search_strategy_t strategy = use_rins ? search_strategy_t::RINS : search_strategy_t::RENS;
@@ -3384,7 +3384,8 @@ void branch_and_bound_t<i_t, f_t>::launch_root_heuristics(
     }
   }
 
-  if (has_incumbent && settings_.mip_hyper_params.submip_mutation != 0) {
+  if (root_heuristics.allow_submip_ && has_incumbent &&
+      settings_.mip_hyper_params.submip_mutation != 0) {
     root_heuristics.stop_old_workers(cut_pass, 1);
     diving_worker_t<i_t, f_t>* worker =
       current_heuristic->create_mutation_worker(cut_pass,

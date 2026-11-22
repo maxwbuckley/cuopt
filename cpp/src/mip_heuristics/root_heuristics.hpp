@@ -205,6 +205,8 @@ struct root_heuristics_t {
   std::shared_ptr<omp_atomic_t<i_t>> worker_count_;
   i_t max_workers_;
   i_t persistent_lane_count_;
+  // False when the root LP is too large for a root sub-MIP (RINS, RENS, mutation) to fit in memory.
+  bool allow_submip_{true};
   cuopt::splitmix64_t seed_rng_;
 
   // Keep track of the last diving heuristic used (so we can cycle between them in low thread
@@ -239,6 +241,13 @@ struct root_heuristics_t {
                               f_t time_limit,
                               std::function<void(f_t, const std::vector<f_t>&, double)> callback)
   {
+    const i_t default_workers = max_workers_;
+    limit_workers_to_memory_budget(lp);
+    if (max_workers_ < default_workers || !allow_submip_) {
+      settings.log.printf("Root heuristics limited by memory: %d workers, sub-MIP %s\n",
+                          max_workers_,
+                          allow_submip_ ? "enabled" : "disabled");
+    }
     persistent_lanes_.reserve(persistent_lane_count_);
     const std::vector<f_t> scratch_assignment;
     for (i_t k = 0; k < persistent_lane_count_; ++k) {
@@ -257,9 +266,39 @@ struct root_heuristics_t {
                           seed_rng_.next_i32(),
                           k,
                           !incumbent_seeded);
+      if (k == 0) {
+        // Every lane builds its own copy of the problem, so large problems get fewer lanes.
+        const int64_t lane_bytes = std::max<int64_t>(1, lane->private_memory_bytes());
+        const int64_t fit        = CUOPT_MIP_CPUFJ_LANE_MEMORY_BUDGET_BYTES / lane_bytes;
+        persistent_lane_count_ =
+          static_cast<i_t>(std::clamp<int64_t>(fit, 1, std::max<i_t>(persistent_lane_count_, 1)));
+      }
       lane->run_async(time_limit);
       persistent_lanes_.push_back(std::move(lane));
     }
+  }
+
+  // Every diving, sub-MIP and CPU FJ worker of the root phase keeps its own copy of the root LP
+  // (column- and row-wise matrix, bounds, basis and factorization). On LPs with millions of rows
+  // the default worker count would take tens of GB, so fewer workers are launched there.
+  void limit_workers_to_memory_budget(const simplex::lp_problem_t<i_t, f_t>& lp)
+  {
+    constexpr int64_t vectors_per_row_and_column = 24;
+    const int64_t worker_bytes =
+      std::max<int64_t>(1,
+                        int64_t{lp.A.col_start[lp.num_cols]} * 2 * (sizeof(i_t) + sizeof(f_t)) +
+                          (int64_t{lp.num_rows} + lp.num_cols) * vectors_per_row_and_column *
+                            static_cast<int64_t>(sizeof(f_t)));
+    // A sub-MIP builds several more copies (user problem, Papilo problem, presolved problem and
+    // its own workers), so it is only launched when that fits as well.
+    constexpr int64_t submip_problem_copies = 16;
+    allow_submip_ =
+      worker_bytes * submip_problem_copies <= CUOPT_MIP_ROOT_HEURISTICS_MEMORY_BUDGET_BYTES;
+    // Leave room for the persistent lanes, cut generation and at least one heuristic worker.
+    const int64_t minimum_workers = int64_t{persistent_lane_count_} + 3;
+    const int64_t fit             = CUOPT_MIP_ROOT_HEURISTICS_MEMORY_BUDGET_BYTES / worker_bytes;
+    max_workers_ =
+      static_cast<i_t>(std::min<int64_t>(max_workers_, std::max<int64_t>(fit, minimum_workers)));
   }
 
   int64_t next_seed() { return seed_rng_.next_i32(); }

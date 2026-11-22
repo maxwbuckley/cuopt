@@ -7,6 +7,7 @@
 
 #include "early_cpufj.cuh"
 
+#include "cpu/climber.hpp"
 #include "cpu/search/api.hpp"
 
 #include <mip_heuristics/mip_constants.hpp>
@@ -86,6 +87,8 @@ void early_cpufj_t<i_t, f_t>::start(int n_lanes,
     if (k == 0) {
       climbers_[0] = init_fj_cpu_from_optimization_problem(
         *this->problem_ptr_, tolerances_, preemption_flag_, settings);
+      n_lanes = cpufj_lane_count_within_memory_budget(*climbers_[0]->problem, n_lanes);
+      climbers_.resize(n_lanes);
     } else {
       climbers_[k] = init_fj_cpu_clone(*climbers_[0], preemption_flag_, settings);
     }
