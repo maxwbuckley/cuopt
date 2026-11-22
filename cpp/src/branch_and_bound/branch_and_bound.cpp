@@ -4204,6 +4204,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   // Started here so the lanes run through the root LP and every cut pass. Their start assignments
   // are fixed before launch.
   root_heuristics_t<i_t, f_t> root_heuristics(settings_.num_threads, settings_.random_seed);
+  root_heuristics.limit_workers_to_memory_budget(original_lp_, settings_);
   const f_t root_fj_time_limit = settings_.time_limit - toc(exploration_stats_.start_time);
   if (!settings_.deterministic && omp_in_parallel() && root_fj_time_limit > 0 &&
       settings_.mip_hyper_params.bnb_root_heuristics != 0) {

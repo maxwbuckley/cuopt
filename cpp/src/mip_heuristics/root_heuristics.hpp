@@ -241,13 +241,6 @@ struct root_heuristics_t {
                               f_t time_limit,
                               std::function<void(f_t, const std::vector<f_t>&, double)> callback)
   {
-    const i_t default_workers = max_workers_;
-    limit_workers_to_memory_budget(lp);
-    if (max_workers_ < default_workers || !allow_submip_) {
-      settings.log.printf("Root heuristics limited by memory: %d workers, sub-MIP %s\n",
-                          max_workers_,
-                          allow_submip_ ? "enabled" : "disabled");
-    }
     persistent_lanes_.reserve(persistent_lane_count_);
     const std::vector<f_t> scratch_assignment;
     for (i_t k = 0; k < persistent_lane_count_; ++k) {
@@ -280,8 +273,10 @@ struct root_heuristics_t {
 
   // Every diving, sub-MIP and CPU FJ worker of the root phase keeps its own copy of the root LP
   // (column- and row-wise matrix, bounds, basis and factorization). On LPs with millions of rows
-  // the default worker count would take tens of GB, so fewer workers are launched there.
-  void limit_workers_to_memory_budget(const simplex::lp_problem_t<i_t, f_t>& lp)
+  // the default worker count would take tens of GB, so fewer workers are launched there. Call
+  // before any root heuristic starts.
+  void limit_workers_to_memory_budget(const simplex::lp_problem_t<i_t, f_t>& lp,
+                                      const simplex::simplex_solver_settings_t<i_t, f_t>& settings)
   {
     constexpr int64_t vectors_per_row_and_column = 24;
     const int64_t worker_bytes =
@@ -294,11 +289,20 @@ struct root_heuristics_t {
     constexpr int64_t submip_problem_copies = 16;
     allow_submip_ =
       worker_bytes * submip_problem_copies <= CUOPT_MIP_ROOT_HEURISTICS_MEMORY_BUDGET_BYTES;
-    // Leave room for the persistent lanes, cut generation and at least one heuristic worker.
-    const int64_t minimum_workers = int64_t{persistent_lane_count_} + 3;
-    const int64_t fit             = CUOPT_MIP_ROOT_HEURISTICS_MEMORY_BUDGET_BYTES / worker_bytes;
+    // Cut generation takes up to two slots; keep at least one heuristic worker beyond them.
+    constexpr int64_t minimum_workers = 3;
+    const int64_t fit         = CUOPT_MIP_ROOT_HEURISTICS_MEMORY_BUDGET_BYTES / worker_bytes;
+    const i_t default_workers = max_workers_;
     max_workers_ =
       static_cast<i_t>(std::min<int64_t>(max_workers_, std::max<int64_t>(fit, minimum_workers)));
+    // Persistent CPU FJ lanes take worker slots too.
+    persistent_lane_count_ = static_cast<i_t>(std::min<int64_t>(
+      persistent_lane_count_, std::max<int64_t>(int64_t{max_workers_} - minimum_workers, 0)));
+    if (max_workers_ < default_workers || !allow_submip_) {
+      settings.log.printf("Root heuristics limited by memory: %d workers, sub-MIP %s\n",
+                          max_workers_,
+                          allow_submip_ ? "enabled" : "disabled");
+    }
   }
 
   int64_t next_seed() { return seed_rng_.next_i32(); }
