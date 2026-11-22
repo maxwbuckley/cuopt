@@ -66,6 +66,22 @@ class heap_t {
     num_entries_ = 0;
   }
 
+  // Same as clear(), but the elements are released by concurrent OpenMP tasks, which matters
+  // when the heap holds millions of entries that each own an allocation.
+  void clear_concurrently()
+  {
+    constexpr size_t chunk_size = size_t{1} << 14;
+    const size_t n              = buffer.size();
+#pragma omp taskloop default(none) shared(buffer, n, chunk_size)
+    for (size_t begin = 0; begin < n; begin += chunk_size) {
+      const size_t end = std::min(n, begin + chunk_size);
+      for (size_t k = begin; k < end; ++k) {
+        buffer[k] = T{};
+      }
+    }
+    clear();
+  }
+
   bool empty() const { return num_entries_ == 0; }
 
   // Read-only access to underlying buffer for iteration without modification
@@ -147,6 +163,14 @@ class node_queue_t {
       steal               = true;
     }
     return steal;
+  }
+
+  // Drops every queued node. The nodes themselves are owned by the search tree.
+  void clear_concurrently()
+  {
+    std::lock_guard lock(mutex_);
+    best_first_heap_.clear_concurrently();
+    diving_heap_.clear_concurrently();
   }
 
   i_t diving_queue_size() { return diving_heap_.size(); }

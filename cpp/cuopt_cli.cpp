@@ -23,7 +23,10 @@
 #include <rmm/mr/cuda_async_memory_resource.hpp>
 
 #include <unistd.h>
+#include <algorithm>
 #include <argparse/argparse.hpp>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
@@ -123,13 +126,17 @@ problem_variant_t read_problem(const std::string& file_path,
  * @param initial_solution_file Path to initial solution file in SOL format
  * @param mps_reader MPS reader implementation selected by the CLI
  * @param settings Merged solver settings (config file loaded in main, then CLI overrides applied)
+ * @param index_64bit If true, parse into a 64-bit index model
+ * @param wall_clock_start If set, the time limit counts from this point instead of the start of
+ *                         the solve, so start-up and reading the problem are included
  */
 int run_single_file(const std::string& file_path,
                     const std::string& initial_solution_file,
                     bool solve_relaxation,
                     cuopt::mathematical_optimization::io::mps_reader_type_t mps_reader,
                     cuopt::mathematical_optimization::solver_settings_t<int, double>& settings,
-                    bool index_64bit = false)
+                    bool index_64bit                                       = false,
+                    std::chrono::steady_clock::time_point wall_clock_start = {})
 {
   // The CLI and the solver library have separate loggers that both write this file.
   // Configure the solver's first so its own initializer reuses that configuration rather
@@ -249,6 +256,23 @@ int run_single_file(const std::string& file_path,
     return -1;
   }
 
+  if (wall_clock_start != std::chrono::steady_clock::time_point{}) {
+    // The solver's time limit covers the solve only; take what was already spent off it.
+    const double time_limit = settings.get_parameter<double>(CUOPT_TIME_LIMIT);
+    if (std::isfinite(time_limit) && time_limit > 0.0) {
+      // A time limit of 0 means no limit, so keep a small positive budget.
+      constexpr double minimum_time_limit = 1e-3;
+      const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_clock_start).count();
+      const double remaining = std::max(time_limit - elapsed, minimum_time_limit);
+      settings.set_parameter<double>(CUOPT_TIME_LIMIT, remaining);
+      CUOPT_LOG_INFO(
+        "Wall-clock time limit: %.2f s spent before the solve, solver time limit set to %.2f s",
+        elapsed,
+        remaining);
+    }
+  }
+
   try {
     if (cuopt::mathematical_optimization::is_remote_execution_enabled()) {
       // Remote execution: problem_interface holds a cpu_optimization_problem_t.
@@ -358,6 +382,8 @@ int set_cuda_module_loading(int argc, char* argv[])
  */
 int main(int argc, char* argv[])
 {
+  const auto program_start = std::chrono::steady_clock::now();
+
   // Handle dump flags before argparse so no other args are required
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -399,6 +425,13 @@ int main(int argc, char* argv[])
 
   program.add_argument("--relaxation")
     .help("solve the LP relaxation of the MIP")
+    .default_value(false)
+    .implicit_value(true);
+
+  program.add_argument("--wall-clock-time-limit")
+    .help(
+      "count the time spent before the solve (start-up and reading the problem) against "
+      "--time-limit, so that the run ends close to the time limit in wall-clock time")
     .default_value(false)
     .implicit_value(true);
 
@@ -523,6 +556,7 @@ int main(int argc, char* argv[])
   const auto params_file           = program.get<std::string>("--params-file");
   const auto mps_reader_arg        = program.get<std::string>("--mps-reader");
   const auto index_64bit           = program.get<bool>("--mps-index-64bit");
+  const auto wall_clock_time_limit = program.get<bool>("--wall-clock-time-limit");
 
   auto mps_reader = cuopt::mathematical_optimization::io::mps_reader_type_t::default_reader;
   if (mps_reader_arg == "experimental-fast") {
@@ -587,5 +621,11 @@ int main(int argc, char* argv[])
   }
 
   return run_single_file(
-    file_name, initial_solution_file, solve_relaxation, mps_reader, settings, index_64bit);
+    file_name,
+    initial_solution_file,
+    solve_relaxation,
+    mps_reader,
+    settings,
+    index_64bit,
+    wall_clock_time_limit ? program_start : std::chrono::steady_clock::time_point{});
 }

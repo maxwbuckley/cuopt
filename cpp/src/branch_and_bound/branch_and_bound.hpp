@@ -135,6 +135,8 @@ class branch_and_bound_t {
     }
   }
 
+  ~branch_and_bound_t();
+
   // Set a solution based on the user problem during the course of the solve
   bool set_solution_from_heuristics(const std::vector<f_t>& solution, heuristics_origin_t origin);
 

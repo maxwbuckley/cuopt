@@ -88,6 +88,8 @@ The user may specify a time limit to the solver. By default the solver runs unti
 
   Note that ``time_limit`` applies only to solve time inside the LP solver. This does not include time for network transfer, validation of input, and other operations that occur outside the solver. The overhead associated with these operations are usually small compared to the solve time.
 
+  With ``cuopt_cli``, pass ``--wall-clock-time-limit`` to count the time spent starting up and reading the problem against the time limit as well.
+
 Node Limit
 --------------
 

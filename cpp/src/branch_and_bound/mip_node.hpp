@@ -15,8 +15,11 @@
 #include <utilities/hashing.hpp>
 #include <utilities/omp_helpers.hpp>
 
+#include <omp.h>
+
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <list>
 #include <memory>
 #include <vector>
@@ -395,6 +398,35 @@ class search_tree_t {
                  branch_var,
                  branch_dir == branch_direction_t::DOWN ? "<=" : ">=",
                  bound);
+    }
+  }
+
+  // Frees every node below the root. A tree stopped at a limit can hold millions of open nodes,
+  // which take seconds to free one at a time, so subtrees near the root are freed by concurrent
+  // OpenMP tasks.
+  void clear()
+  {
+    const size_t target_subtrees = 4 * static_cast<size_t>(std::max(1, omp_get_max_threads()));
+    std::deque<std::unique_ptr<mip_node_t<i_t, f_t>>> subtrees;
+    for (auto& child : root.children) {
+      if (child) { subtrees.push_back(std::move(child)); }
+    }
+    root.num_children = 0;
+    // Split the largest-looking subtrees (those nearest the root) until there are enough to
+    // share. Each split frees one inner node and queues its children.
+    size_t splits = 0;
+    while (!subtrees.empty() && subtrees.size() < target_subtrees && splits < target_subtrees) {
+      auto node = std::move(subtrees.front());
+      subtrees.pop_front();
+      for (auto& child : node->children) {
+        if (child) { subtrees.push_back(std::move(child)); }
+      }
+      ++splits;
+    }
+    const size_t n_subtrees = subtrees.size();
+#pragma omp taskloop default(none) shared(subtrees, n_subtrees) grainsize(1)
+    for (size_t k = 0; k < n_subtrees; ++k) {
+      subtrees[k].reset();
     }
   }
 

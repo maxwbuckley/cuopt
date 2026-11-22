@@ -337,6 +337,18 @@ f_t branch_and_bound_t<i_t, f_t>::get_lower_bound()
 }
 
 template <typename i_t, typename f_t>
+branch_and_bound_t<i_t, f_t>::~branch_and_bound_t()
+{
+  // A search stopped at a limit can leave millions of open nodes. Releasing them one at a time
+  // in the member destructors takes seconds after the solve has returned, so the queues and the
+  // tree are freed by OpenMP tasks first.
+  for (i_t k = 0; k < bfs_worker_pool_.size(); ++k) {
+    bfs_worker_pool_[k]->node_queue.clear_concurrently();
+  }
+  search_tree_.clear();
+}
+
+template <typename i_t, typename f_t>
 void branch_and_bound_t<i_t, f_t>::set_initial_upper_bound(f_t bound)
 {
   upper_bound_ = bound;
