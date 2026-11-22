@@ -218,6 +218,21 @@ void mip_solver_t<i_t, f_t>::stop_early_heuristics()
   incumbents.clear();
 }
 
+// The heuristics accept rows violated within the feasibility tolerance, which can make the
+// objective better than any exactly feasible point. Re-solves the continuous variables of `sol` so
+// the returned objective is attainable.
+template <typename i_t, typename f_t>
+static void polish_heuristic_solution(mip::branch_and_bound_t<i_t, f_t>& branch_and_bound,
+                                      solution_t<i_t, f_t>& sol)
+{
+  if (!sol.get_feasible()) { return; }
+  std::vector<f_t> assignment = sol.get_host_assignment();
+  if (branch_and_bound.polish_solution(assignment)) {
+    sol.copy_new_assignment(assignment);
+    sol.compute_feasibility();
+  }
+}
+
 template <typename i_t, typename f_t>
 solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
 {
@@ -534,10 +549,14 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
   }  // implicit barrier for all tasks created in B&B and heuristics
 
   dm.population.add_external_solutions_to_population();
-  if (dm.population.is_feasible() &&
-      (!sol.get_feasible() ||
-       dm.population.best_feasible().get_objective() < sol.get_objective())) {
-    sol = solution_t<i_t, f_t>(dm.population.best_feasible());
+  polish_heuristic_solution(*branch_and_bound, sol);
+  if (dm.population.is_feasible()) {
+    solution_t<i_t, f_t> population_best(dm.population.best_feasible());
+    polish_heuristic_solution(*branch_and_bound, population_best);
+    if (population_best.get_feasible() &&
+        (!sol.get_feasible() || population_best.get_objective() < sol.get_objective())) {
+      sol = std::move(population_best);
+    }
   }
 
   if (branch_and_bound->has_solver_space_incumbent()) {

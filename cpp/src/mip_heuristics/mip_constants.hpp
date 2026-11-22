@@ -39,6 +39,13 @@
  * portfolio gains little while Papilo slows down roughly linearly with the lane count. */
 #define CUOPT_MIP_EARLY_CPUFJ_MAX_LANES 16
 
+/* @brief Row or bound violation above which a heuristic solution with continuous variables is
+ * not trusted at face value: its continuous variables are re-solved with the integer variables
+ * fixed before its objective is used as an upper bound or returned. Within the feasibility
+ * tolerance a heuristic can otherwise report an objective better than any exactly feasible point.
+ */
+#define CUOPT_MIP_POLISH_VIOLATION_THRESHOLD 1e-9
+
 /* @brief Maximum Papilo arena concurrency, including the calling solver thread. */
 #define CUOPT_MIP_PAPILO_THREAD_LIMIT 4
 
