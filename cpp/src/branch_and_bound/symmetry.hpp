@@ -987,9 +987,10 @@ std::unique_ptr<mip_symmetry_t<i_t, f_t>> detect_symmetry(
   const size_t max_generators =
     std::max(size_t{1}, static_cast<size_t>(64000000 / num_original_vars));
   orbits_t<i_t> orb(num_original_vars);
-  int num_dejavu_generators = 0;
-  int projected_count       = 0;
-  int skipped_non_binary    = 0;
+  int num_dejavu_generators   = 0;
+  int projected_count         = 0;
+  int skipped_general_integer = 0;
+  int moved_continuous        = 0;
   std::vector<i_t> projected_p(num_original_vars);
   std::iota(projected_p.begin(), projected_p.end(), 0);
   std::vector<i_t> var_support;
@@ -1001,7 +1002,9 @@ std::unique_ptr<mip_symmetry_t<i_t, f_t>> detect_symmetry(
                                 &orb,
                                 &result,
                                 &projected_count,
-                                &skipped_non_binary,
+                                &skipped_general_integer,
+                                &moved_continuous,
+                                &var_types,
                                 &max_generators](int n, const int* p, int nsupp, const int* supp) {
     // Check if any support element is an original variable
     bool moves_variable = false;
@@ -1015,23 +1018,34 @@ std::unique_ptr<mip_symmetry_t<i_t, f_t>> detect_symmetry(
     num_dejavu_generators++;
 
     // Project onto binary variables only.
-    // Skip generators that move any non-binary variable (continuous or general integer).
+    // Vertex colors separate variable types, so every automorphism maps binaries to binaries
+    // and continuous variables to continuous variables. Restricting a generator to the binary
+    // variables therefore gives a valid symmetry of the binary part: continuous variables are
+    // never branched on, so orbital fixing and lexicographic reduction only reason about
+    // binaries, and the permuted continuous values complete the symmetric solution.
+    // Skip generators that move a general integer variable, since branching on general
+    // integers is not tracked by orbital fixing.
     // Only touch support entries; reset them back to identity afterward.
     // dejavu guarantees supp is exactly the non-identity entries of p.
-    bool moves_non_binary = false;
+    bool moves_general_integer = false;
+    bool moves_continuous      = false;
     var_support.clear();
     for (int s = 0; s < nsupp; s++) {
       const i_t j = supp[s];
       if (j >= num_original_vars) { continue; }
       if (result->is_binary[j] == 0) {
-        moves_non_binary = true;
+        if (var_types[j] == simplex::variable_type_t::CONTINUOUS) {
+          moves_continuous = true;
+          continue;
+        }
+        moves_general_integer = true;
         break;
       }
       projected_p[j] = p[j];
       var_support.push_back(j);
     }
 
-    if (!moves_non_binary && !var_support.empty()) {
+    if (!moves_general_integer && !var_support.empty()) {
       for (i_t j : var_support) {
         orb.add_mapping(j, projected_p[j]);
       }
@@ -1039,8 +1053,9 @@ std::unique_ptr<mip_symmetry_t<i_t, f_t>> detect_symmetry(
         result->generators.add_generator(projected_p, var_support);
       }
       projected_count++;
-    } else if (moves_non_binary) {
-      skipped_non_binary++;
+      if (moves_continuous) { moved_continuous++; }
+    } else if (moves_general_integer) {
+      skipped_general_integer++;
     }
 
     // Reset modified entries back to identity
@@ -1072,11 +1087,12 @@ std::unique_ptr<mip_symmetry_t<i_t, f_t>> detect_symmetry(
                         (int)max_generators);
   }
   settings.log.printf(
-    "Projected %d generators onto %d binary variables (%d skipped non-binary), "
-    "%d stored\n",
+    "Projected %d generators onto %d binary variables (%d skipped general integer, "
+    "%d also moved continuous), %d stored\n",
     projected_count,
     (int)num_original_vars,
-    skipped_non_binary,
+    skipped_general_integer,
+    moved_continuous,
     result->num_generators);
 
   // Compute orbit statistics from the incrementally built orbits.
