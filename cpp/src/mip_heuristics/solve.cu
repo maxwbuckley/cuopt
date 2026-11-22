@@ -936,11 +936,13 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
         fallback_sol.copy_new_assignment(early_best_user_assignment);
         fallback_sol.compute_feasibility();
         // The solver received this incumbent and re-solved its continuous variables if its rows
-        // were violated within the tolerance, so the objective it returned is the attainable one.
+        // were violated within the tolerance, so when it returned an incumbent, that objective is
+        // the attainable one. Without one, the early incumbent is still the best available.
         const bool has_continuous = op_problem.get_n_integers() < op_problem.get_n_variables();
-        if (fallback_sol.get_feasible() &&
-            (!has_continuous || fallback_sol.compute_max_constraint_violation() <=
-                                  CUOPT_MIP_POLISH_VIOLATION_THRESHOLD)) {
+        const bool trust_objective =
+          !sol_has_incumbent || !has_continuous ||
+          fallback_sol.compute_max_constraint_violation() <= CUOPT_MIP_POLISH_VIOLATION_THRESHOLD;
+        if (fallback_sol.get_feasible() && trust_objective) {
           auto stats                          = sol.get_stats();
           stats.presolve_time                 = cuopt_presolve_time + presolve_time;
           fallback_sol.post_process_completed = true;
