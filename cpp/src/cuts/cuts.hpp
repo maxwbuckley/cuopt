@@ -567,6 +567,17 @@ class flow_cover_generation_t {
                    const flow_cover_row_t<i_t>& flow_cover_row,
                    inequality_t<i_t, f_t>& cut);
 
+  // Separate a flow cover cut from an arbitrary row sum_j row_j x_j <= row.rhs over structural
+  // columns (no slack columns). Requires preprocess_cut_pass for the current LP solution.
+  i_t generate_cut_from_inequality(const simplex::lp_problem_t<i_t, f_t>& lp,
+                                   const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
+                                   csr_matrix_t<i_t, f_t>& Arow,
+                                   const variable_bounds_t<i_t, f_t>& variable_bounds,
+                                   const std::vector<simplex::variable_type_t>& var_types,
+                                   const std::vector<f_t>& xstar,
+                                   const inequality_t<i_t, f_t>& row,
+                                   inequality_t<i_t, f_t>& cut);
+
   i_t num_constraints() const { return flow_cover_constraints_.size(); }
   const std::vector<flow_cover_row_t<i_t>>& get_constraints() const
   {
@@ -579,6 +590,15 @@ class flow_cover_generation_t {
                           inequality_t<i_t, f_t>& row,
                           f_t& b,
                           bool& negate_row);
+
+  void load_row_terms(const flow_cover_context_t<i_t, f_t>& context,
+                      const inequality_t<i_t, f_t>& row,
+                      bool negate_row,
+                      f_t& b);
+
+  i_t separate_loaded_row(const flow_cover_context_t<i_t, f_t>& context,
+                          f_t b,
+                          inequality_t<i_t, f_t>& cut);
 
   bool build_single_node_flow_relaxation(const flow_cover_context_t<i_t, f_t>& context,
                                          f_t b,

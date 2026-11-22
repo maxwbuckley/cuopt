@@ -359,6 +359,24 @@ bool flow_cover_generation_t<i_t, f_t>::normalize_row_side(
     }(),
     "Flow cover normalized row side excludes LP solution");
 
+  load_row_terms(context, row, negate_row, b);
+  return true;
+}
+
+// Load the terms of the row side sum_j coeff_j x_j <= b (coeff_j = -row_j when negate_row) into the
+// scratch state used to build the single-node-flow relaxation. Slack columns are skipped; the
+// caller has accounted for them in b. Tiny coefficients are moved to the right-hand side at a
+// bound.
+template <typename i_t, typename f_t>
+void flow_cover_generation_t<i_t, f_t>::load_row_terms(
+  const flow_cover_context_t<i_t, f_t>& context,
+  const inequality_t<i_t, f_t>& row,
+  bool negate_row,
+  f_t& b)
+{
+  const f_t coefficient_tol = static_cast<f_t>(1e-6);
+  auto& scratch             = *this;
+  const i_t row_len         = row.size();
   scratch.continuous_terms.reserve(row_len);
   scratch.binary_columns.reserve(row_len);
   auto add_binary_coeff = [&](i_t j, f_t coeff) {
@@ -372,7 +390,7 @@ bool flow_cover_generation_t<i_t, f_t>::normalize_row_side(
 
   for (i_t k = 0; k < row_len; k++) {
     const i_t j = row.index(k);
-    if (is_slack_[j]) { continue; }
+    if (j < static_cast<i_t>(is_slack_.size()) && is_slack_[j]) { continue; }
     const f_t coeff = negate_row ? -row.coeff(k) : row.coeff(k);
     if (std::abs(coeff) <= coefficient_tol) {
       const f_t dropped_bound = coeff > 0.0 ? context.lp.lower[j] : context.lp.upper[j];
@@ -387,8 +405,6 @@ bool flow_cover_generation_t<i_t, f_t>::normalize_row_side(
       scratch.continuous_terms.push_back({j, coeff});
     }
   }
-
-  return true;
 }
 
 template <typename i_t, typename f_t>
@@ -1005,6 +1021,14 @@ i_t flow_cover_generation_t<i_t, f_t>::generate_cut(
   bool negate_row = false;
   if (!normalize_row_side(context, flow_cover_row, row, b, negate_row)) { return -1; }
 
+  return separate_loaded_row(context, b, cut);
+}
+
+template <typename i_t, typename f_t>
+i_t flow_cover_generation_t<i_t, f_t>::separate_loaded_row(
+  const flow_cover_context_t<i_t, f_t>& context, f_t b, inequality_t<i_t, f_t>& cut)
+{
+  const auto& settings   = context.settings;
   f_t single_node_flow_b = 0.0;
   if (!build_single_node_flow_relaxation(context, b, single_node_flow_b)) { return -1; }
 
@@ -1030,6 +1054,28 @@ i_t flow_cover_generation_t<i_t, f_t>::generate_cut(
     return -1;
   }
   return 0;
+}
+
+template <typename i_t, typename f_t>
+i_t flow_cover_generation_t<i_t, f_t>::generate_cut_from_inequality(
+  const lp_problem_t<i_t, f_t>& lp,
+  const simplex_solver_settings_t<i_t, f_t>& settings,
+  csr_matrix_t<i_t, f_t>& Arow,
+  const variable_bounds_t<i_t, f_t>& variable_bounds,
+  const std::vector<variable_type_t>& var_types,
+  const std::vector<f_t>& xstar,
+  const inequality_t<i_t, f_t>& row,
+  inequality_t<i_t, f_t>& cut)
+{
+  // row: sum_j row_j x_j <= row.rhs over structural columns (no slacks), e.g. an aggregation of
+  // several constraint rows built by the MIR separator.
+  if (!cut_pass_preprocessed) { return -1; }
+  if (!std::isfinite(row.rhs)) { return -1; }
+  flow_cover_context_t<i_t, f_t> context{lp, settings, Arow, variable_bounds, var_types, xstar};
+  clear_cut_state(lp.num_cols);
+  f_t b = row.rhs;
+  load_row_terms(context, row, false, b);
+  return separate_loaded_row(context, b, cut);
 }
 
 template <typename i_t, typename f_t>

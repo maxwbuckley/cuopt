@@ -60,92 +60,34 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
 
   f_t work_estimate  = 0.0;
   i_t cuts_processed = 0;
-  while (cuts_processed < max_cuts && !score_queue.empty()) {
-    if (toc(start_time) >= settings.time_limit) { break; }
-    // Get the row with the highest score from the queue
-    auto [max_score, i] = score_queue.top();
-    score_queue.pop();
-    // skip stale score entries
-    if (max_score != scores[i]) { continue; }
-    ++cuts_processed;
 
-    // Add the current row to the aggregated set
-    aggregated_mark[i] = 1;
-    aggregated_rows.push_back(i);
-
-    const i_t row_nz      = Arow.row_length(i);
-    const i_t slack       = complemented_mir.slack_cols(i);
-    const f_t slack_value = xstar[slack];
-
-    if (max_score <= 0.0) { break; }
-    if (work_estimate > 2e9) { break; }
-
-    inequality_t<i_t, f_t> inequality(Arow, i, lp.rhs[i]);
-    work_estimate += inequality.size();
-
-    const bool generate_cg_cut = settings.strong_chvatal_gomory_cuts != 0;
-    f_t fractional_part_rhs    = fractional_part(inequality.rhs);
-    if (generate_cg_cut && fractional_part_rhs > 1e-6 && fractional_part_rhs < (1 - 1e-6)) {
-      // Try to generate a CG cut
-
-      inequality_t<i_t, f_t> cg_inequality = inequality;
-      if (fractional_part(inequality.rhs) < 0.5) {
-        // Multiply by -1 to force the fractional part to be greater than 0.5
-        cg_inequality.negate();
-      }
-      inequality_t<i_t, f_t> cg_cut;
-      i_t cg_status =
-        cg.generate_strong_cg_cut(lp, settings, var_types, cg_inequality, xstar, cg_cut);
-      if (cg_status == 0) { cut_pool_.add_cut(cut_type_t::CHVATAL_GOMORY, cg_cut); }
-    }
-
-    if (settings.mir_cuts == 0) { continue; }
-
-    // Remove the slack from the equality to get an inequality
-    work_estimate += inequality.size();
-    i_t negate_inequality = 1;
-    for (i_t k = 0; k < inequality.size(); k++) {
-      const i_t j = inequality.index(k);
-      if (j == slack) {
-        if (inequality.coeff(k) != 1.0) {
-          if (inequality.coeff(k) == -1.0 && lp.lower[j] >= 0.0) {
-            negate_inequality = 0;
-          } else {
-            settings.log.debug("Bad slack %d in inequality: aj %e lo %e up %e\n",
-                               j,
-                               inequality.coeff(k),
-                               lp.lower[j],
-                               lp.upper[j]);
-            negate_inequality = -1;
-            break;
-          }
-        }
-        inequality.vector.x[k] = 0.0;
+  // Convert an aggregated row in ">=" form into the "<=" form used by the flow cover separator,
+  // removing slack columns at the bound that keeps the relaxation valid:
+  //   sum_j a_j x_j + g s <= b  and  g s >= min(g s)  imply  sum_j a_j x_j <= b - min(g s).
+  auto aggregated_row_for_flow_cover = [&](const inequality_t<i_t, f_t>& ge_row,
+                                           inequality_t<i_t, f_t>& le_row) -> bool {
+    le_row.clear();
+    le_row.reserve(ge_row.size());
+    le_row.rhs = -ge_row.rhs;
+    for (i_t k = 0; k < ge_row.size(); k++) {
+      const i_t j  = ge_row.index(k);
+      const f_t aj = -ge_row.coeff(k);
+      if (aj == 0.0) { continue; }
+      if (complemented_mir.slack_rows(j) >= 0) {
+        const f_t min_term = aj > 0.0 ? aj * lp.lower[j] : aj * lp.upper[j];
+        if (!std::isfinite(min_term)) { return false; }
+        le_row.rhs -= min_term;
+      } else {
+        le_row.push_back(j, aj);
       }
     }
+    return le_row.size() > 0 && std::isfinite(le_row.rhs);
+  };
 
-    if (negate_inequality == -1) { continue; }
-
-    if (negate_inequality) {
-      // inequaility'*x <= inequality_rhs
-      // But for MIR we need: inequality'*x >= inequality_rhs
-      inequality.negate();
-      work_estimate += inequality.size();
-    }
-    // We should now have: inequality'*x >= inequality_rhs
-
-    for (i_t k = 0; k < inequality.size(); k++) {
-      const i_t j = inequality.index(k);
-      if (var_types[j] == variable_type_t::INTEGER) {
-        if (transformed_xstar[j] > complemented_mir.new_upper(j) / 2.0) {
-          settings.log.printf("!!!!!! j %d transformed x_j %e new_upper_j/2.0 %e\n",
-                              j,
-                              transformed_xstar[j],
-                              complemented_mir.new_upper(j) / 2.0);
-        }
-      }
-    }
-
+  // Starting from a single-row relaxation in ">=" form, try to generate a MIR cut. If none is
+  // found, aggregate further rows to eliminate continuous variables that are away from their
+  // bounds, and retry. Rows used are recorded in aggregated_rows/aggregated_mark.
+  auto aggregate_and_generate_mir_cut = [&](inequality_t<i_t, f_t> inequality) -> bool {
     bool add_cut             = false;
     i_t num_aggregated       = 0;
     const i_t max_aggregated = 6;
@@ -154,6 +96,23 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
     work_estimate += lp.num_cols;
 
     while (!add_cut && num_aggregated < max_aggregated) {
+      // Once rows have been aggregated, also try a flow cover cut on the aggregated row. The
+      // flow cover separator otherwise only sees single constraints, while aggregations of
+      // flow-conservation rows describe cut-sets of a network.
+      bool flow_cover_added = false;
+      if (num_aggregated > 0 && settings.flow_cover_cuts != 0) {
+        inequality_t<i_t, f_t> flow_row(lp.num_cols);
+        if (aggregated_row_for_flow_cover(inequality, flow_row)) {
+          inequality_t<i_t, f_t> flow_cut(lp.num_cols);
+          if (flow_cover_generation_.generate_cut_from_inequality(
+                lp, settings, Arow, variable_bounds, var_types, xstar, flow_row, flow_cut) == 0) {
+            cut_pool_.add_cut(cut_type_t::FLOW_COVER, flow_cut);
+            flow_cover_added = true;
+          }
+        }
+        work_estimate += 10 * inequality.size();
+      }
+
       inequality_t<i_t, f_t> transformed_inequality;
       inequality.squeeze(transformed_inequality);
       work_estimate += transformed_inequality.size();
@@ -169,7 +128,7 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
                                                                  work_estimate,
                                                                  start_time,
                                                                  settings.time_limit);
-      if (toc(start_time) >= settings.time_limit) { return; }
+      if (toc(start_time) >= settings.time_limit) { return false; }
       // Note cut is in the transformed variables
 
       if (cut_found) {
@@ -183,8 +142,9 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
         if (viol > 1e-6) { add_cut = true; }
       }
 
-      if (add_cut) {
-        if (settings.mir_cuts != 0) { cut_pool_.add_cut(cut_type_t::MIXED_INTEGER_ROUNDING, cut); }
+      if (add_cut || flow_cover_added) {
+        if (add_cut) { cut_pool_.add_cut(cut_type_t::MIXED_INTEGER_ROUNDING, cut); }
+        add_cut = true;
         break;
       } else {
         // Perform aggregation to try and find a cut
@@ -277,25 +237,123 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
         num_aggregated++;  // Always increase so the loop terminates
       }
     }
+    return add_cut;
+  };
 
-    if (add_cut) {
-      // We were successful in generating a cut.
+  while (cuts_processed < max_cuts && !score_queue.empty()) {
+    if (toc(start_time) >= settings.time_limit) { break; }
+    // Get the row with the highest score from the queue
+    auto [max_score, i] = score_queue.top();
+    score_queue.pop();
+    // skip stale score entries
+    if (max_score != scores[i]) { continue; }
+    ++cuts_processed;
 
-      // Set the score of the aggregated rows to a lower value
-      for (i_t row : aggregated_rows) {
-        scores[row] = 0.99 * scores[row];
-        score_queue.push(std::make_pair(scores[row], row));
+    const i_t row_nz      = Arow.row_length(i);
+    const i_t slack       = complemented_mir.slack_cols(i);
+    const f_t slack_value = xstar[slack];
+
+    if (max_score <= 0.0) { break; }
+    if (work_estimate > 2e9) { break; }
+
+    inequality_t<i_t, f_t> inequality(Arow, i, lp.rhs[i]);
+    work_estimate += inequality.size();
+
+    const bool generate_cg_cut = settings.strong_chvatal_gomory_cuts != 0;
+    f_t fractional_part_rhs    = fractional_part(inequality.rhs);
+    if (generate_cg_cut && fractional_part_rhs > 1e-6 && fractional_part_rhs < (1 - 1e-6)) {
+      // Try to generate a CG cut
+
+      inequality_t<i_t, f_t> cg_inequality = inequality;
+      if (fractional_part(inequality.rhs) < 0.5) {
+        // Multiply by -1 to force the fractional part to be greater than 0.5
+        cg_inequality.negate();
       }
-      work_estimate += aggregated_rows.size() * std::log2(score_queue.size());
+      inequality_t<i_t, f_t> cg_cut;
+      i_t cg_status =
+        cg.generate_strong_cg_cut(lp, settings, var_types, cg_inequality, xstar, cg_cut);
+      if (cg_status == 0) { cut_pool_.add_cut(cut_type_t::CHVATAL_GOMORY, cg_cut); }
     }
 
-    // Clear the aggregated mark
-    work_estimate += 2 * aggregated_rows.size();
-    for (i_t row : aggregated_rows) {
-      aggregated_mark[row] = 0;
+    if (settings.mir_cuts != 0) {
+      // Row i reads a_i^T x + c s = b, with c = +/-1 and l <= s <= u. Removing the slack gives
+      // up to two valid single-row relaxations in the ">=" form needed by MIR:
+      //   upper side:  -a_i^T x >= -(b - min(c s))
+      //   lower side:   a_i^T x >=   b - max(c s)
+      // The side implied by the slack sign is always tried. Equality rows (fixed slack), such
+      // as flow-conservation rows, are also tried in the opposite orientation: both are valid
+      // and they lead to different aggregations and cuts.
+      f_t slack_coeff = 0.0;
+      for (i_t k = 0; k < inequality.size(); k++) {
+        if (inequality.index(k) == slack) { slack_coeff = inequality.coeff(k); }
+      }
+      const f_t slack_lower = lp.lower[slack];
+      const f_t slack_upper = lp.upper[slack];
+      std::vector<bool> sides;  // true: upper side, false: lower side
+      if (slack_coeff == 1.0 && slack_lower > -inf) {
+        sides.push_back(true);
+        if (slack_upper == slack_lower) { sides.push_back(false); }
+      } else if (slack_coeff == -1.0 && slack_lower > -inf) {
+        sides.push_back(false);
+        if (slack_upper == slack_lower) { sides.push_back(true); }
+      } else {
+        settings.log.debug("Bad slack %d in inequality: aj %e lo %e up %e\n",
+                           slack,
+                           slack_coeff,
+                           slack_lower,
+                           slack_upper);
+      }
+
+      for (const bool upper_side : sides) {
+        // Add the current row to the aggregated set
+        aggregated_mark[i] = 1;
+        aggregated_rows.push_back(i);
+
+        // Remove the slack from the equality to get an inequality
+        inequality_t<i_t, f_t> side_inequality = inequality;
+        work_estimate += side_inequality.size();
+        for (i_t k = 0; k < side_inequality.size(); k++) {
+          if (side_inequality.index(k) == slack) { side_inequality.vector.x[k] = 0.0; }
+        }
+        // c s takes values in [min_cs, max_cs]
+        const f_t min_cs =
+          slack_coeff > 0.0 ? slack_coeff * slack_lower : slack_coeff * slack_upper;
+        const f_t max_cs =
+          slack_coeff > 0.0 ? slack_coeff * slack_upper : slack_coeff * slack_lower;
+        if (upper_side) {
+          // a_i^T x <= b - min_cs  <=>  -a_i^T x >= min_cs - b
+          side_inequality.rhs -= min_cs;
+          side_inequality.negate();
+        } else {
+          // a_i^T x >= b - max_cs
+          side_inequality.rhs -= max_cs;
+        }
+        work_estimate += side_inequality.size();
+        // We should now have: side_inequality'*x >= side_inequality_rhs
+
+        const bool add_cut = aggregate_and_generate_mir_cut(side_inequality);
+        if (toc(start_time) >= settings.time_limit) { return; }
+
+        if (add_cut) {
+          // We were successful in generating a cut.
+
+          // Set the score of the aggregated rows to a lower value
+          for (i_t row : aggregated_rows) {
+            scores[row] = 0.99 * scores[row];
+            score_queue.push(std::make_pair(scores[row], row));
+          }
+          work_estimate += aggregated_rows.size() * std::log2(score_queue.size());
+        }
+
+        // Clear the aggregated mark
+        work_estimate += 2 * aggregated_rows.size();
+        for (i_t row : aggregated_rows) {
+          aggregated_mark[row] = 0;
+        }
+        // Clear the aggregated rows
+        aggregated_rows.clear();
+      }
     }
-    // Clear the aggregated rows
-    aggregated_rows.clear();
 
     scores[i] = 0.0;
     score_queue.push(std::make_pair(scores[i], i));
