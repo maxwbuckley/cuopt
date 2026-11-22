@@ -118,6 +118,31 @@ problem_variant_t read_problem(const std::string& file_path,
 }
 
 /**
+ * @brief Take the time spent since `wall_clock_start` off the solver's time limit
+ * @param settings Solver settings whose time limit is reduced
+ * @param wall_clock_start Start of the wall-clock budget; a default-constructed value leaves the
+ *                         time limit unchanged
+ */
+void apply_wall_clock_time_limit(
+  cuopt::mathematical_optimization::solver_settings_t<int, double>& settings,
+  std::chrono::steady_clock::time_point wall_clock_start)
+{
+  if (wall_clock_start == std::chrono::steady_clock::time_point{}) { return; }
+  const double time_limit = settings.get_parameter<double>(CUOPT_TIME_LIMIT);
+  if (!std::isfinite(time_limit) || time_limit <= 0.0) { return; }
+  // A time limit of 0 means no limit, so keep a small positive budget.
+  constexpr double minimum_time_limit = 1e-3;
+  const double elapsed =
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_clock_start).count();
+  const double remaining = std::max(time_limit - elapsed, minimum_time_limit);
+  settings.set_parameter<double>(CUOPT_TIME_LIMIT, remaining);
+  CUOPT_LOG_INFO(
+    "Wall-clock time limit: %.2f s spent before the solve, solver time limit set to %.2f s",
+    elapsed,
+    remaining);
+}
+
+/**
  * @brief Run a single file
  * @param file_path Path to the input file. Dispatched by extension:
  *                  .lp/.lp.gz/.lp.bz2 → LP parser;
@@ -202,6 +227,7 @@ int run_single_file(const std::string& file_path,
       CUOPT_LOG_ERROR("Initial solution file is not supported for multi-GPU PDLP.");
       return -1;
     }
+    apply_wall_clock_time_limit(settings, wall_clock_start);
     auto sol = std::visit(
       [&](auto const& mps) {
         return cuopt::mathematical_optimization::solve_lp(
@@ -256,22 +282,7 @@ int run_single_file(const std::string& file_path,
     return -1;
   }
 
-  if (wall_clock_start != std::chrono::steady_clock::time_point{}) {
-    // The solver's time limit covers the solve only; take what was already spent off it.
-    const double time_limit = settings.get_parameter<double>(CUOPT_TIME_LIMIT);
-    if (std::isfinite(time_limit) && time_limit > 0.0) {
-      // A time limit of 0 means no limit, so keep a small positive budget.
-      constexpr double minimum_time_limit = 1e-3;
-      const double elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_clock_start).count();
-      const double remaining = std::max(time_limit - elapsed, minimum_time_limit);
-      settings.set_parameter<double>(CUOPT_TIME_LIMIT, remaining);
-      CUOPT_LOG_INFO(
-        "Wall-clock time limit: %.2f s spent before the solve, solver time limit set to %.2f s",
-        elapsed,
-        remaining);
-    }
-  }
+  apply_wall_clock_time_limit(settings, wall_clock_start);
 
   try {
     if (cuopt::mathematical_optimization::is_remote_execution_enabled()) {
